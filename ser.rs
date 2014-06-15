@@ -240,82 +240,6 @@ impl<
     }
 }
 
-/*
-impl<
-    'a,
-    T: Serializable<'a, Iter>,
-    Iter: Iterator<Token<'a>>
-> Serializable<'a, VecSerializer<'a, T, Iter>> for Vec<T> {
-    #[inline]
-    fn serialize(&'a self) -> VecSerializer<'a, T, Iter> {
-        VecSerializer {
-            state: SeqSerializerStart,
-            len: self.len(),
-            items: self.iter(),
-            tokens: None,
-        }
-    }
-}
-
-enum SeqSerializerState {
-    SeqSerializerStart,
-    SeqSerializerItems,
-    SeqSerializerTokens,
-    SeqSerializerEnd,
-}
-
-pub struct VecSerializer<'a, T, Iter> {
-    state: SeqSerializerState,
-    len: uint,
-    items: slice::Items<'a, T>,
-    tokens: Option<Iter>,
-}
-
-impl<
-    'a,
-    T: Serializable<'a, Iter>,
-    Iter: Iterator<Token<'a>>
-> Iterator<Token<'a>> for VecSerializer<'a, T, Iter> {
-    fn next(&mut self) -> Option<Token<'a>> {
-        loop {
-            match self.state {
-                SeqSerializerStart => {
-                    self.state = SeqSerializerItems;
-                    return Some(SeqStart(self.len));
-                }
-                SeqSerializerItems => {
-                    match self.items.next() {
-                        Some(value) => {
-                            self.state = SeqSerializerTokens;
-                            self.tokens = Some(value.serialize());
-                            continue;
-                        }
-                        None => {
-                            self.state = SeqSerializerEnd;
-                            return Some(End);
-                        }
-                    }
-                }
-                SeqSerializerTokens => {
-                    let tokens = self.tokens.get_mut_ref();
-                    match tokens.next() {
-                        Some(token) => {
-                            return Some(token);
-                        }
-                        None => {
-                            self.state = SeqSerializerItems;
-                        }
-                    }
-
-                }
-                SeqSerializerEnd => {
-                    return None
-                }
-            }
-        }
-    }
-}
-*/
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -649,9 +573,9 @@ mod tests {
         Frog(String, int)
     }
 
-    impl<'a> Serializable<'a, AnimalSerializer<'a, _>> for Animal {
+    impl<'a> Serializable<'a, AnimalSerializer<'a>> for Animal {
         #[inline]
-        fn serialize(&'a self) -> AnimalSerializer<'a, _> {
+        fn serialize(&'a self) -> AnimalSerializer<'a> {
             match *self {
                 Dog => {
                     CompoundSerializer::new(
@@ -685,13 +609,11 @@ mod tests {
     }
     */
 
-    pub type AnimalSerializer<'a, Iter> =
+    pub type AnimalSerializer<'a> =
         CompoundSerializer<
             'a,
             Enum2<
                 Empty,
-                Iter
-                /*
                 iter::Chain<
                     option::Item<
                         Token<'a>
@@ -700,7 +622,6 @@ mod tests {
                         Token<'a>
                     >
                 >
-                */
             >
         >;
 
