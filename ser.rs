@@ -8,8 +8,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::collections::hashmap;
+use std::collections::treemap;
 use std::collections::{HashMap, TreeMap};
 use std::hash::Hash;
+use std::iter;
+use std::option;
+use std::slice;
 
 #[deriving(Clone, PartialEq, Show)]
 pub enum Token<'a> {
@@ -42,29 +47,32 @@ pub enum Token<'a> {
 
 //////////////////////////////////////////////////////////////////////////////
 
-pub trait Serializer<E> {
-    fn serialize<'a>(&mut self, token: Token<'a>) -> Result<(), E>;
+/*
+pub trait Serializer<'a>: Iterator<Token<'a>> {
+    //fn serialize(&mut self), token: Token<'a>) -> Result<(), E>;
 }
+*/
 
 //////////////////////////////////////////////////////////////////////////////
 
-pub trait Serializable<E, S: Serializer<E>> {
-    fn serialize(&self, s: &mut S) -> Result<(), E>;
+pub trait Serializable<'a, Iter: Iterator<Token<'a>>> {
+    fn serialize(&'a self) -> Iter;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 macro_rules! impl_serializable {
     ($ty:ty, $variant:expr) => {
-        impl<'a, E, S: Serializer<E>> Serializable<E, S> for $ty {
+        impl<'a> Serializable<'a, option::Item<Token<'a>>> for $ty {
             #[inline]
-            fn serialize(&self, s: &mut S) -> Result<(), E> {
-                s.serialize($variant)
+            fn serialize(&'a self) -> option::Item<Token<'a>> {
+                Some($variant).move_iter()
             }
         }
     }
 }
 
+impl_serializable!((), Null)
 impl_serializable!(bool, Bool(*self))
 impl_serializable!(int, Int(*self))
 impl_serializable!(i8, I8(*self))
@@ -84,20 +92,69 @@ impl_serializable!(String, Str(self.as_slice()))
 
 //////////////////////////////////////////////////////////////////////////////
 
-impl<
-    E,
-    S: Serializer<E>,
-    T: Serializable<E, S>
-> Serializable<E, S> for Option<T> {
-    #[inline]
-    fn serialize(&self, s: &mut S) -> Result<(), E> {
-        match *self {
-            Some(ref value) => {
-                try!(s.serialize(Option(true)));
-                value.serialize(s)
+/*
+struct Tuple2Items<T> {
+    idx: uint,
+    tuple: (T, T),
+}
+
+impl<'a, T> Iterator<&'a T> for Tuple2Items<T> {
+    fn next(&mut self) -> Option<&'a T> {
+        match self.idx {
+            0 => {
+                self.idx += 1;
+                Some(self.tuple.ref0)
             }
-            None => {
-                s.serialize(Option(false))
+            1 => {
+                self.idx += 1;
+                Some(self.tuple.ref0)
+            }
+            _ => {
+                None
+            }
+        }
+    }
+}
+*/
+
+//////////////////////////////////////////////////////////////////////////////
+
+impl<
+    'a,
+    Iter: Iterator<Token<'a>>,
+    T: Serializable<'a, Iter>
+> Serializable<'a, OptionSerializer<'a, Iter>> for Option<T> {
+    #[inline]
+    fn serialize(&'a self) -> OptionSerializer<'a, Iter> {
+        let iter: Option<Iter> = match *self {
+            Some(ref value) => Some(value.serialize()),
+            None => None,
+        };
+
+        OptionSerializer {
+            start: true,
+            iter: iter,
+        }
+    }
+}
+
+pub struct OptionSerializer<'a, Iter> {
+    start: bool,
+    iter: Option<Iter>,
+}
+
+impl<
+    'a,
+    Iter: Iterator<Token<'a>>
+> Iterator<Token<'a>> for OptionSerializer<'a, Iter>{
+    fn next(&mut self) -> Option<Token<'a>> {
+        if self.start {
+            self.start = false;
+            Some(Option(self.iter.is_some()))
+        } else {
+            match self.iter {
+                Some(ref mut iter) => iter.next(),
+                None => None,
             }
         }
     }
@@ -105,57 +162,244 @@ impl<
 
 //////////////////////////////////////////////////////////////////////////////
 
-impl<
-    E,
-    S: Serializer<E>,
-    T: Serializable<E, S>
-> Serializable<E, S> for Vec<T> {
-    #[inline]
-    fn serialize(&self, s: &mut S) -> Result<(), E> {
-        try!(s.serialize(SeqStart(self.len())));
-        for elt in self.iter() {
-            try!(elt.serialize(s));
+pub struct CompoundSerializer<'a, Iter> {
+    start_token: Option<Token<'a>>,
+    iter: Iter,
+    finished: bool,
+}
+
+impl<'a, Iter: Iterator<Token<'a>>> CompoundSerializer<'a, Iter> {
+    pub fn new(start_token: Token<'a>, iter: Iter) -> CompoundSerializer<'a, Iter> {
+        CompoundSerializer {
+            start_token: Some(start_token),
+            iter: iter,
+            finished: false,
         }
-        s.serialize(End)
+    }
+}
+
+impl<'a, Iter: Iterator<Token<'a>>> Iterator<Token<'a>> for CompoundSerializer<'a, Iter> {
+    #[inline]
+    fn next(&mut self) -> Option<Token<'a>> {
+        if self.finished {
+            None
+        } else {
+            match self.start_token.take() {
+                Some(token) => { return Some(token); }
+                None => { }
+            }
+
+            match self.iter.next() {
+                Some(token) => { return Some(token); }
+                None => {
+                    self.finished = true;
+                    Some(End)
+                }
+            }
+        }
     }
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+pub type SeqSerializer<'a, T, Iter, Items> =
+    CompoundSerializer<
+        'a,
+        iter::FlatMap<
+            'a,
+            &'a T,
+            Items,
+            Iter
+        >
+    >;
+
 impl<
-    E,
-    S: Serializer<E>,
-    K: Serializable<E, S> + Eq + Hash,
-    V: Serializable<E, S>
-> Serializable<E, S> for HashMap<K, V> {
+    'a,
+    T: Serializable<'a, Iter>,
+    Iter: Iterator<Token<'a>>
+> Serializable<
+    'a,
+    SeqSerializer<
+        'a,
+        T,
+        Iter,
+        slice::Items<'a, T>
+    >
+> for Vec<T> {
     #[inline]
-    fn serialize(&self, s: &mut S) -> Result<(), E> {
-        try!(s.serialize(MapStart(self.len())));
-        for (key, value) in self.iter() {
-            try!(key.serialize(s));
-            try!(value.serialize(s));
+    fn serialize(&'a self) -> SeqSerializer<
+        'a,
+        T,
+        Iter,
+        slice::Items<'a, T>
+    > {
+        CompoundSerializer::new(
+            SeqStart(self.len()),
+            self.iter().flat_map(|v| v.serialize())
+        )
+    }
+}
+
+/*
+impl<
+    'a,
+    T: Serializable<'a, Iter>,
+    Iter: Iterator<Token<'a>>
+> Serializable<'a, VecSerializer<'a, T, Iter>> for Vec<T> {
+    #[inline]
+    fn serialize(&'a self) -> VecSerializer<'a, T, Iter> {
+        VecSerializer {
+            state: SeqSerializerStart,
+            len: self.len(),
+            items: self.iter(),
+            tokens: None,
         }
-        s.serialize(End)
+    }
+}
+
+enum SeqSerializerState {
+    SeqSerializerStart,
+    SeqSerializerItems,
+    SeqSerializerTokens,
+    SeqSerializerEnd,
+}
+
+pub struct VecSerializer<'a, T, Iter> {
+    state: SeqSerializerState,
+    len: uint,
+    items: slice::Items<'a, T>,
+    tokens: Option<Iter>,
+}
+
+impl<
+    'a,
+    T: Serializable<'a, Iter>,
+    Iter: Iterator<Token<'a>>
+> Iterator<Token<'a>> for VecSerializer<'a, T, Iter> {
+    fn next(&mut self) -> Option<Token<'a>> {
+        loop {
+            match self.state {
+                SeqSerializerStart => {
+                    self.state = SeqSerializerItems;
+                    return Some(SeqStart(self.len));
+                }
+                SeqSerializerItems => {
+                    match self.items.next() {
+                        Some(value) => {
+                            self.state = SeqSerializerTokens;
+                            self.tokens = Some(value.serialize());
+                            continue;
+                        }
+                        None => {
+                            self.state = SeqSerializerEnd;
+                            return Some(End);
+                        }
+                    }
+                }
+                SeqSerializerTokens => {
+                    let tokens = self.tokens.get_mut_ref();
+                    match tokens.next() {
+                        Some(token) => {
+                            return Some(token);
+                        }
+                        None => {
+                            self.state = SeqSerializerItems;
+                        }
+                    }
+
+                }
+                SeqSerializerEnd => {
+                    return None
+                }
+            }
+        }
+    }
+}
+*/
+
+//////////////////////////////////////////////////////////////////////////////
+
+pub type MapSerializer<'a, K, V, KeyIter, ValIter, Items> =
+    CompoundSerializer<
+        'a,
+        iter::FlatMap<
+            'a,
+            (&'a K, &'a V),
+            Items,
+            iter::Chain<
+                KeyIter,
+                ValIter
+            >
+        >
+    >;
+
+impl<
+    'a,
+    K: Serializable<'a, KeyIter> + Eq + Hash,
+    V: Serializable<'a, ValIter>,
+    KeyIter: Iterator<Token<'a>>,
+    ValIter: Iterator<Token<'a>>
+> Serializable<
+    'a,
+    MapSerializer<
+        'a,
+        K,
+        V,
+        KeyIter,
+        ValIter,
+        hashmap::Entries<'a, K, V>
+    >
+> for HashMap<K, V> {
+    #[inline]
+    fn serialize(&'a self) -> MapSerializer<
+        'a,
+        K,
+        V,
+        KeyIter,
+        ValIter,
+        hashmap::Entries<'a, K, V>
+    > {
+        CompoundSerializer::new(
+            MapStart(self.len()),
+            self.iter().flat_map(|(k, v)| k.serialize().chain(v.serialize()))
+        )
     }
 }
 
 impl<
-    E,
-    S: Serializer<E>,
-    K: Serializable<E, S> + Ord,
-    V: Serializable<E, S>
-> Serializable<E, S> for TreeMap<K, V> {
+    'a,
+    K: Serializable<'a, KeyIter> + Ord,
+    V: Serializable<'a, ValIter>,
+    KeyIter: Iterator<Token<'a>>,
+    ValIter: Iterator<Token<'a>>
+> Serializable<
+    'a,
+    MapSerializer<
+        'a,
+        K,
+        V,
+        KeyIter,
+        ValIter,
+        treemap::Entries<'a, K, V>
+    >
+> for TreeMap<K, V> {
     #[inline]
-    fn serialize(&self, s: &mut S) -> Result<(), E> {
-        try!(s.serialize(MapStart(self.len())));
-        for (key, value) in self.iter() {
-            try!(key.serialize(s));
-            try!(value.serialize(s));
-        }
-        s.serialize(End)
+    fn serialize(&'a self) -> MapSerializer<
+        'a,
+        K,
+        V,
+        KeyIter,
+        ValIter,
+        treemap::Entries<'a, K, V>
+    > {
+        CompoundSerializer::new(
+            MapStart(self.len()),
+            self.iter().flat_map(|(k, v)| k.serialize().chain(v.serialize()))
+        )
     }
 }
 
+/*
 //////////////////////////////////////////////////////////////////////////////
 
 macro_rules! peel {
@@ -201,9 +445,125 @@ macro_rules! impl_serialize_tuple {
 impl_serialize_tuple! { T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, }
 
 //////////////////////////////////////////////////////////////////////////////
+*/
+
+//////////////////////////////////////////////////////////////////////////////
+
+struct Empty;
+
+impl<T> Iterator<T> for Empty {
+    #[inline]
+    fn next(&mut self) -> Option<T> {
+        None
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+enum Variants2<T0, T1> {
+    Variant0(T0),
+    Variant1(T1),
+}
+
+impl<
+    T,
+    T0: Iterator<T>,
+    T1: Iterator<T>
+> Iterator<T> for Variants2<T0, T1> {
+    fn next(&mut self) -> Option<T> {
+        match *self {
+            Variant0(ref mut iter) => iter.next(),
+            Variant1(ref mut iter) => iter.next(),
+        }
+    }
+}
+
+/*
+macro_rules! peel_iterator_variants {
+    ($name:ident, $($other:ident,)*) => (impl_iterator_variants!($($other,)*))
+}
+
+macro_rules! impl_iterator_variants {
+    () => { };
+    ( $($idx:ident,)+ ) => {
+        pub enum Variants<$($idx),*> {
+            $(Variant($idx)),*
+        }
+        /*
+        */
+
+        /*
+        impl<
+            T //,
+            //$($idx:Iterator<T>),*
+        > Iterator<T> for ($(T$idx,)*) {
+            #[inline]
+            #[allow(uppercase_variables)]
+            fn next(&mut self) -> Option<T> {
+                match *self {
+                    $(
+                        Variant$idx(ref mut iter) => iter.next(),
+                    ),*
+                }
+            }
+        }
+        */
+        peel_iterator_variants!($($idx,)*)
+    }
+}
+
+impl_iterator_variants! { V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, }
+*/
+
+macro_rules! impl_iterator_variant {
+    ($name:ident, $($variant:ident),*) => {
+        #[allow(non_camel_case_types)]
+        pub enum $name<$($variant),*> {
+            $($variant($variant)),*
+        }
+
+        impl<
+            T,
+            $($variant:Iterator<T>),*
+        > Iterator<T> for $name<$($variant),*> {
+            #[inline]
+            #[allow(uppercase_variables)]
+            fn next(&mut self) -> Option<T> {
+                match *self {
+                    $( $variant(ref mut iter) => iter.next() ),*
+                }
+            }
+        }
+    }
+}
+
+impl_iterator_variant!(Enum1, Variant1_0)
+impl_iterator_variant!(Enum2, Variant2_0, Variant2_1)
+impl_iterator_variant!(Enum3, Variant3_0, Variant3_1, Variant3_2)
+
+//////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
+    use super::{Token, Null, Bool, Int, Str, Option};
+    use super::{SeqStart, MapStart, EnumStart, End};
+    use super::Serializable;
+    use super::CompoundSerializer;
+    use super::{Empty, Enum2, Variant2_0, Variant2_1};
+
+    use std::collections::TreeMap;
+    use std::iter;
+    use std::option;
+
+    macro_rules! treemap {
+        ($($k:expr => $v:expr),*) => ({
+            let mut _m = ::std::collections::TreeMap::new();
+            $(_m.insert($k, $v);)*
+            _m
+        })
+    }
+
+    /*
     use std::collections::{HashMap, TreeMap};
 
     use serialize::Decoder;
@@ -252,32 +612,160 @@ mod tests {
             s.serialize(End)
         }
     }
+    */
 
     //////////////////////////////////////////////////////////////////////////////
 
-    #[deriving(Clone, PartialEq, Show, Decodable)]
+    /*
+    enum MaybeEmpty<Iter> {
+        Empty,
+        NotEmpty(Iter),
+    }
+
+    impl<T, Iter: Iterator<T>> Iterator<T> for MaybeEmpty<Iter> {
+        #[inline]
+        fn next(&mut self) -> Option<T> {
+            match *self {
+                Empty => None,
+                NotEmpty(ref mut iter) => iter.next(),
+            }
+        }
+
+        #[inline]
+        fn size_hint(&self) -> (uint, Option<uint>) {
+            match *self {
+                Empty => (0, None),
+                NotEmpty(iter) => iter.size_hint(),
+            }
+        }
+    }
+    */
+
+    //////////////////////////////////////////////////////////////////////////////
+
+    #[deriving(Clone, PartialEq, Show)]
     enum Animal {
         Dog,
         Frog(String, int)
     }
 
-    impl<E, S: Serializer<E>> Serializable<E, S> for Animal {
+    impl<'a> Serializable<'a, AnimalSerializer<'a, _>> for Animal {
         #[inline]
-        fn serialize(&self, s: &mut S) -> Result<(), E> {
+        fn serialize(&'a self) -> AnimalSerializer<'a, _> {
             match *self {
                 Dog => {
-                    try!(s.serialize(EnumStart("Animal", "Dog", 0)));
+                    CompoundSerializer::new(
+                        EnumStart("Animal", "Dog", 0),
+                        Variant2_0(Empty)
+                    )
                 }
-                Frog(ref x, y) => {
-                    try!(s.serialize(EnumStart("Animal", "Frog", 2)));
-                    try!(x.serialize(s));
-                    try!(y.serialize(s));
+                Frog(ref x, ref y) => {
+                    CompoundSerializer::new(
+                        EnumStart("Animal", "Frog", 2),
+                        Variant2_1(x.serialize().chain(y.serialize()))
+                    )
                 }
             }
-            s.serialize(End)
         }
     }
 
+    /*
+    enum AnimalV {
+        DogIter,
+        FrogIter(
+            iter::Chain<
+                option::Item<
+                    Token<'a>
+                >,
+                option::Item<
+                    Token<'a>
+                >
+            >
+        )
+    }
+    */
+
+    pub type AnimalSerializer<'a, Iter> =
+        CompoundSerializer<
+            'a,
+            Enum2<
+                Empty,
+                Iter
+                /*
+                iter::Chain<
+                    option::Item<
+                        Token<'a>
+                    >,
+                    option::Item<
+                        Token<'a>
+                    >
+                >
+                */
+            >
+        >;
+
+
+        /*
+        iter::Chain<
+            iter::Chain<
+                option::Item<Token<'a>>,
+                tests::Variants2<
+                    tests::MaybeEmpty<
+                        <generic #37>>,
+                            tests::MaybeEmpty<iter::Chain<option::Item<Token<'_>>,
+                            option::Item<Token<'_>>
+                        >
+                    >
+                >
+            >,
+            option::Item<Token<'_>>
+        >;
+        */
+
+
+        /*
+        iter::Chain<
+            option::Item<Token<'a>>,
+            iter::Chain<
+                MaybeEmpty<
+                    iter::Chain<
+                        option::Item<Token<'a>>,
+                        option::Item<Token<'a>>
+                    >
+                >,
+                option::Item<Token<'a>>
+            >
+        >;
+        */
+
+    /*
+    enum AnimalSerializerState<Iter1, Iter2> {
+        AnimalSerializerStart,
+        AnimalSerializerDog(Iter1),
+        AnimalSerializerFrog(Iter2),
+        AnimalSerializerEnd,
+    }
+
+    struct AnimalSerializer {
+        state: AnimalSerializerState,
+    }
+
+    impl<'a> Iterator<Token<'a>> for AnimalSerializer {
+        fn next(&mut self) -> Option<Token<'a>> {
+            match self.state {
+                AnimalSerializerStart => {
+                }
+            }
+        }
+    }
+    */
+
+    /*
+    type AnimalSerializer<'a> =
+        ;
+        */
+
+    /*
     //////////////////////////////////////////////////////////////////////////////
 
     #[deriving(Show)]
@@ -314,64 +802,56 @@ mod tests {
             Ok(())
         }
     }
+    */
 
     //////////////////////////////////////////////////////////////////////////////
 
-    #[test]
-    fn test_tokens_int() {
-        let tokens = vec!(
-            Int(5)
-        );
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        5i.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
-    }
+    fn test_value<
+        'a,
+        T: Serializable<'a, Iter>,
+        Iter: Iterator<Token<'a>>
+    >(value: &'a T, tokens: Vec<Token<'a>>) {
+        let mut iter = value.serialize();
+        for token in tokens.move_iter() {
+            assert_eq!(iter.next(), Some(token));
+        }
 
-    #[test]
-    fn test_tokens_str() {
-        let tokens = vec!(
-            Str("a"),
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        "a".serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn test_tokens_null() {
-        let tokens = vec!(
-            Null,
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        ().serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+        test_value(&(), vec!(Null));
     }
 
     #[test]
-    fn test_tokens_option_none() {
-        let tokens = vec!(
-            Option(false),
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        None::<int>.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+    fn test_tokens_bool() {
+        test_value(&true, vec!(Bool(true)));
+        test_value(&false, vec!(Bool(false)));
     }
 
     #[test]
-    fn test_tokens_option_some() {
-        let tokens = vec!(
-            Option(true),
-            Int(5),
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        Some(5).serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+    fn test_tokens_int() {
+        test_value(&5, vec!(Int(5)));
     }
 
+    #[test]
+    fn test_tokens_str() {
+        test_value(&"abc", vec!(Str("abc")));
+    }
+
+    #[test]
+    fn test_tokens_string() {
+        test_value(&"abc".to_string(), vec!(Str("abc")));
+    }
+
+    #[test]
+    fn test_tokens_option() {
+        test_value(&None::<int>, vec!(Option(false)));
+        test_value(&Some(5), vec!(Option(true), Int(5)));
+    }
+
+    /*
     #[test]
     fn test_tokens_tuple() {
         let tokens = vec!(
@@ -461,103 +941,104 @@ mod tests {
         }.serialize(&mut serializer).unwrap();
         assert_eq!(serializer.iter.next(), None);
     }
+    */
 
     #[test]
     fn test_tokens_enum() {
-        let tokens = vec!(
-            EnumStart("Animal", "Dog", 0),
-            End,
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        Dog.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
-
-        let tokens = vec!(
-            EnumStart("Animal", "Frog", 2),
+        test_value(&Dog, vec!(EnumStart("Animal", "Dog", 0), End));
+        test_value(
+            &Frog("Henry".to_string(), 349),
+            vec!(
+                EnumStart("Animal", "Frog", 2),
                 Str("Henry"),
                 Int(349),
-            End,
+                End
+            )
         );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        Frog("Henry".to_string(), 349).serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
-    }
-
-    #[test]
-    fn test_tokens_vec_empty() {
-        let tokens = vec!(
-            SeqStart(0),
-            End,
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        let v: Vec<int> = vec!();
-        v.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
     }
 
     #[test]
     fn test_tokens_vec() {
-        let tokens = vec!(
-            SeqStart(3),
-                Int(5),
-                Int(6),
-                Int(7),
-            End,
+        let v: Vec<int> = vec!();
+        test_value(&v, vec!(SeqStart(0), End));
+
+        test_value(
+            &vec!(1, 2, 3),
+            vec!(SeqStart(3), Int(1), Int(2), Int(3), End)
         );
 
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        (vec!(5, 6, 7)).serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
-    }
-
-    #[test]
-    fn test_tokens_vec_compound() {
-        let tokens = vec!(
-            SeqStart(3),
-                SeqStart(1),
-                    Int(1),
-                End,
-
-                SeqStart(2),
-                    Int(2),
-                    Int(3),
-                End,
-
+        test_value(
+            &vec!(vec!(1), vec!(2, 3), vec!(4, 5, 6)),
+            vec!(
                 SeqStart(3),
-                    Int(4),
-                    Int(5),
-                    Int(6),
-                End,
-            End,
-        );
+                    SeqStart(1),
+                        Int(1),
+                    End,
 
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        (vec!(vec!(1), vec!(2, 3), vec!(4, 5, 6))).serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+                    SeqStart(2),
+                        Int(2),
+                        Int(3),
+                    End,
+
+                    SeqStart(3),
+                        Int(4),
+                        Int(5),
+                        Int(6),
+                    End,
+                End,
+            )
+        );
     }
 
     #[test]
     fn test_tokens_treemap() {
-        let tokens = vec!(
-            MapStart(2),
-                Int(5),
-                Str("a"),
+        let v: TreeMap<int, int> = TreeMap::new();
+        test_value(&v, vec!(MapStart(0), End));
 
-                Int(6),
-                Str("b"),
-            End,
+        test_value(
+            &treemap!("a" => 1, "b" => 2, "c" => 3),
+            vec!(
+                MapStart(3),
+                    Str("a"),
+                    Int(1),
+
+                    Str("b"),
+                    Int(2),
+
+                    Str("c"),
+                    Int(3),
+                End
+            )
         );
 
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
+        test_value(
+            &treemap!(
+                "a" => treemap!(),
+                "b" => treemap!("a" => 1),
+                "c" => treemap!("a" => 2, "b" => 3)
+            ),
+            vec!(
+                MapStart(3),
+                    Str("a"),
+                    MapStart(0),
+                    End,
 
-        let mut map = TreeMap::new();
-        map.insert(5, "a".to_string());
-        map.insert(6, "b".to_string());
+                    Str("b"),
+                    MapStart(1),
+                        Str("a"),
+                        Int(1),
+                    End,
 
-        map.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+                    Str("c"),
+                    MapStart(2),
+                        Str("a"),
+                        Int(2),
+
+                        Str("b"),
+                        Int(3),
+                    End,
+                End
+            )
+        );
     }
 }

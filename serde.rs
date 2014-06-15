@@ -13,13 +13,14 @@ extern crate debug;
 #[cfg(test)]
 extern crate serialize;
 
-pub mod de;
+//pub mod de;
 pub mod ser;
-pub mod json;
+//pub mod json;
 
 //#[cfg(test)]
 //pub mod bench_bytes;
 
+/*
 #[cfg(test)]
 pub mod bench_enum;
 
@@ -31,3 +32,4 @@ pub mod bench_vec;
 
 #[cfg(test)]
 pub mod bench_map;
+*/
