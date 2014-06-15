@@ -469,15 +469,18 @@ impl_iterator_variant!(Enum3, Variant3_0, Variant3_1, Variant3_2)
 
 #[cfg(test)]
 mod tests {
-    use super::{Token, Null, Bool, Int, Str, Option};
-    use super::{SeqStart, MapStart, EnumStart, End};
+    use super::{Token, Null, Bool, Int, Uint, Char, Str, Option};
+    use super::{SeqStart, MapStart, EnumStart, StructStart, End};
     use super::Serializable;
     use super::CompoundSerializer;
+    use super::{OptionSerializer, SeqSerializer, MapSerializer};
     use super::{Empty, Enum2, Variant2_0, Variant2_1};
 
-    use std::collections::TreeMap;
+    use std::collections::hashmap;
+    use std::collections::{HashMap, TreeMap};
     use std::iter;
     use std::option;
+    use std::slice;
 
     macro_rules! treemap {
         ($($k:expr => $v:expr),*) => ({
@@ -498,72 +501,96 @@ mod tests {
     use super::{Serializer, Serializable};
 
     //////////////////////////////////////////////////////////////////////////////
+    */
 
-    #[deriving(Clone, PartialEq, Show, Decodable)]
+    #[deriving(Clone, PartialEq, Show)]
     struct Inner {
         a: (),
         b: uint,
         c: HashMap<String, Option<char>>,
     }
 
-    impl<E, S: Serializer<E>> Serializable<E, S> for Inner {
+    impl<'a> Serializable<'a, InnerSerializer<'a>> for Inner {
         #[inline]
-        fn serialize(&self, s: &mut S) -> Result<(), E> {
-            try!(s.serialize(StructStart("Inner", 3)));
-            try!(s.serialize(Str("a")));
-            try!(self.a.serialize(s));
-            try!(s.serialize(Str("b")));
-            try!(self.b.serialize(s));
-            try!(s.serialize(Str("c")));
-            try!(self.c.serialize(s));
-            s.serialize(End)
+        fn serialize(&'a self) -> InnerSerializer<'a> {
+            CompoundSerializer::new(
+                StructStart("Inner", 3),
+                Some(Str("a")).move_iter()
+                    .chain(self.a.serialize())
+                    .chain(Some(Str("b")).move_iter())
+                    .chain(self.b.serialize())
+                    .chain(Some(Str("c")).move_iter())
+                    .chain(self.c.serialize())
+            )
         }
     }
 
+    type InnerSerializer<'a> =
+        CompoundSerializer<
+            'a,
+            iter::Chain<
+                iter::Chain<
+                    iter::Chain<
+                        iter::Chain<
+                            iter::Chain<
+                                option::Item<Token<'a>>,
+                                option::Item<Token<'a>>
+                            >,
+                            option::Item<Token<'a>>
+                        >,
+                        option::Item<Token<'a>>
+                    >,
+                    option::Item<Token<'a>>
+                >,
+                MapSerializer<
+                    'a,
+                    String,
+                    Option<char>,
+                    option::Item<Token<'a>>,
+                    OptionSerializer<
+                        'a,
+                        option::Item<Token<'a>>
+                    >,
+                    hashmap::Entries<
+                        'a,
+                        String,
+                        Option<char>
+                    >
+                >
+            >
+        >;
+
     //////////////////////////////////////////////////////////////////////////////
 
-    #[deriving(Clone, PartialEq, Show, Decodable)]
+    #[deriving(Clone, PartialEq, Show)]
     struct Outer {
         inner: Vec<Inner>,
     }
 
-    impl<E, S: Serializer<E>> Serializable<E, S> for Outer {
+    impl<'a> Serializable<'a, OuterSerializer<'a>> for Outer {
         #[inline]
-        fn serialize(&self, s: &mut S) -> Result<(), E> {
-            try!(s.serialize(StructStart("Outer", 1)));
-            try!(s.serialize(Str("inner")));
-            try!(self.inner.serialize(s));
-            s.serialize(End)
+        fn serialize(&'a self) -> OuterSerializer<'a> {
+            CompoundSerializer::new(
+                StructStart("Outer", 1),
+                Some(Str("inner")).move_iter()
+                    .chain(self.inner.serialize())
+            )
         }
     }
-    */
 
-    //////////////////////////////////////////////////////////////////////////////
-
-    /*
-    enum MaybeEmpty<Iter> {
-        Empty,
-        NotEmpty(Iter),
-    }
-
-    impl<T, Iter: Iterator<T>> Iterator<T> for MaybeEmpty<Iter> {
-        #[inline]
-        fn next(&mut self) -> Option<T> {
-            match *self {
-                Empty => None,
-                NotEmpty(ref mut iter) => iter.next(),
-            }
-        }
-
-        #[inline]
-        fn size_hint(&self) -> (uint, Option<uint>) {
-            match *self {
-                Empty => (0, None),
-                NotEmpty(iter) => iter.size_hint(),
-            }
-        }
-    }
-    */
+    type OuterSerializer<'a> =
+        CompoundSerializer<
+            'a,
+            iter::Chain<
+                option::Item<Token<'a>>,
+                SeqSerializer<
+                    'a,
+                    Inner,
+                    InnerSerializer<'a>,
+                    slice::Items<'a, Inner>
+                >
+            >
+        >;
 
     //////////////////////////////////////////////////////////////////////////////
 
@@ -593,22 +620,6 @@ mod tests {
         }
     }
 
-    /*
-    enum AnimalV {
-        DogIter,
-        FrogIter(
-            iter::Chain<
-                option::Item<
-                    Token<'a>
-                >,
-                option::Item<
-                    Token<'a>
-                >
-            >
-        )
-    }
-    */
-
     pub type AnimalSerializer<'a> =
         CompoundSerializer<
             'a,
@@ -624,67 +635,6 @@ mod tests {
                 >
             >
         >;
-
-
-        /*
-        iter::Chain<
-            iter::Chain<
-                option::Item<Token<'a>>,
-                tests::Variants2<
-                    tests::MaybeEmpty<
-                        <generic #37>>,
-                            tests::MaybeEmpty<iter::Chain<option::Item<Token<'_>>,
-                            option::Item<Token<'_>>
-                        >
-                    >
-                >
-            >,
-            option::Item<Token<'_>>
-        >;
-        */
-
-
-        /*
-        iter::Chain<
-            option::Item<Token<'a>>,
-            iter::Chain<
-                MaybeEmpty<
-                    iter::Chain<
-                        option::Item<Token<'a>>,
-                        option::Item<Token<'a>>
-                    >
-                >,
-                option::Item<Token<'a>>
-            >
-        >;
-        */
-
-    /*
-    enum AnimalSerializerState<Iter1, Iter2> {
-        AnimalSerializerStart,
-        AnimalSerializerDog(Iter1),
-        AnimalSerializerFrog(Iter2),
-        AnimalSerializerEnd,
-    }
-
-    struct AnimalSerializer {
-        state: AnimalSerializerState,
-    }
-
-    impl<'a> Iterator<Token<'a>> for AnimalSerializer {
-        fn next(&mut self) -> Option<Token<'a>> {
-            match self.state {
-                AnimalSerializerStart => {
-                }
-            }
-        }
-    }
-    */
-
-    /*
-    type AnimalSerializer<'a> =
-        ;
-        */
 
     /*
     //////////////////////////////////////////////////////////////////////////////
@@ -734,7 +684,8 @@ mod tests {
     >(value: &'a T, tokens: Vec<Token<'a>>) {
         let mut iter = value.serialize();
         for token in tokens.move_iter() {
-            assert_eq!(iter.next(), Some(token));
+            let t = iter.next();
+            assert_eq!(t, Some(token));
         }
 
         assert_eq!(iter.next(), None);
@@ -805,64 +756,58 @@ mod tests {
         ((), (), (5, "a")).serialize(&mut serializer).unwrap();
         assert_eq!(serializer.iter.next(), None);
     }
-
-    #[test]
-    fn test_tokens_struct_empty() {
-        let tokens = vec!(
-            StructStart("Outer", 1),
-                Str("inner"),
-                SeqStart(0),
-                End,
-            End,
-        );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
-        Outer { inner: vec!() }.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
-    }
+    */
 
     #[test]
     fn test_tokens_struct() {
-        let tokens = vec!(
-            StructStart("Outer", 1),
-                Str("inner"),
-                SeqStart(1),
-                    StructStart("Inner", 3),
-                        Str("a"),
-                        Null,
-
-                        Str("b"),
-                        Uint(5),
-
-                        Str("c"),
-                        MapStart(1),
-                            Str("abc"),
-
-                            Option(true),
-                            Char('c'),
-                        End,
+        test_value(
+            &Outer { inner: vec!() },
+            vec!(
+                StructStart("Outer", 1),
+                    Str("inner"),
+                    SeqStart(0),
                     End,
                 End,
-            End,
+            )
         );
-
-        let mut serializer = AssertSerializer::new(tokens.move_iter());
 
         let mut map = HashMap::new();
         map.insert("abc".to_string(), Some('c'));
 
-        Outer {
-            inner: vec!(
-                Inner {
-                    a: (),
-                    b: 5,
-                    c: map,
-                },
+        test_value(
+            &Outer {
+                inner: vec!(
+                    Inner {
+                        a: (),
+                        b: 5,
+                        c: map,
+                    },
+                )
+            },
+            vec!(
+                StructStart("Outer", 1),
+                    Str("inner"),
+                    SeqStart(1),
+                        StructStart("Inner", 3),
+                            Str("a"),
+                            Null,
+
+                            Str("b"),
+                            Uint(5),
+
+                            Str("c"),
+                            MapStart(1),
+                                Str("abc"),
+
+                                Option(true),
+                                Char('c'),
+                            End,
+                        End,
+                    End,
+                End,
             )
-        }.serialize(&mut serializer).unwrap();
-        assert_eq!(serializer.iter.next(), None);
+        );
     }
-    */
 
     #[test]
     fn test_tokens_enum() {
