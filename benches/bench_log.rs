@@ -6,8 +6,12 @@ extern crate serde;
 extern crate "rustc-serialize" as rustc_serialize;
 extern crate test;
 
+use std::cmp;
 use std::io::{self, ReadExt, WriteExt};
+use std::mem;
 use std::num::FromPrimitive;
+use std::slice;
+
 use test::Bencher;
 
 use serde::de::{self, Deserialize, Deserializer};
@@ -707,6 +711,155 @@ impl io::Write for MyMemWriter1 {
     }
 }
 
+struct MyBufWriter0<'a> {
+    buf: &'a mut [u8],
+}
+
+impl<'a> MyBufWriter0<'a> {
+    pub fn new(buf: &'a mut [u8]) -> MyBufWriter0<'a> {
+        MyBufWriter0 {
+            buf: buf,
+        }
+    }
+}
+
+
+impl<'a> io::Write for MyBufWriter0<'a> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        panic!()
+    }
+
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        let amt = cmp::min(data.len(), self.buf.len());
+        let (a, b) = mem::replace(&mut self.buf, &mut []).split_at_mut(amt);
+        slice::bytes::copy_memory(a, &data[..amt]);
+        self.buf = b;
+
+        if amt == data.len() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer", None))
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+struct MyBufWriter1<'a> {
+    buf: &'a mut [u8],
+}
+
+impl<'a> MyBufWriter1<'a> {
+    pub fn new(buf: &'a mut [u8]) -> MyBufWriter1<'a> {
+        MyBufWriter1 {
+            buf: buf,
+        }
+    }
+}
+
+
+impl<'a> io::Write for MyBufWriter1<'a> {
+    #[inline]
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let amt = cmp::min(data.len(), self.buf.len());
+        let (a, b) = mem::replace(&mut self.buf, &mut []).split_at_mut(amt);
+        slice::bytes::copy_memory(a, &data[..amt]);
+        self.buf = b;
+        Ok(amt)
+    }
+
+    #[inline]
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        if try!(self.write(data)) == data.len() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer", None))
+        }
+    }
+
+    #[inline]
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+struct MyBufWriter2<'a> {
+    dst: &'a mut [u8],
+}
+
+impl<'a> MyBufWriter2<'a> {
+    pub fn new(buf: &'a mut [u8]) -> MyBufWriter2<'a> {
+        MyBufWriter2 {
+            dst: buf,
+        }
+    }
+}
+
+
+impl<'a> io::Write for MyBufWriter2<'a> {
+    fn write(&mut self, _data: &[u8]) -> io::Result<usize> {
+        panic!()
+    }
+
+    fn write_all(&mut self, src: &[u8]) -> io::Result<()> {
+        use std::raw;
+
+        let dst_len = self.dst.len();
+
+        if dst_len == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer", None));
+        }
+
+        let src_len = src.len();
+
+        /*
+        let amt = cmp::min(src_len, dst_len);
+        let (a, b) = mem::replace(&mut self.dst, &mut []).split_at_mut(amt);
+        slice::bytes::copy_memory(a, &src[..amt]);
+        self.dst = b;
+        */
+
+        if dst_len >= src_len {
+            slice::bytes::copy_memory(self.dst, src);
+
+            unsafe {
+            /*
+                ptr::copy_nonoverlapping(
+                    self.dst.as_mut_ptr(),
+                    src.as_ptr(),
+                    src_len);
+                    */
+
+                self.dst = mem::transmute(raw::Slice {
+                    data: self.dst.as_ptr().offset(src_len as isize),
+                    len: dst_len - src_len,
+                });
+            }
+
+            Ok(())
+        } else {
+            slice::bytes::copy_memory(self.dst, &src[..dst_len]);
+
+
+            unsafe {
+                /*
+                ptr::copy_nonoverlapping(
+                    self.dst.as_mut_ptr(),
+                    src.as_ptr(),
+                    dst_len);
+                    */
+
+                self.dst = mem::transmute(raw::Slice {
+                    data: self.dst.as_ptr().offset(dst_len as isize),
+                    len: 0,
+                });
+            }
+
+            Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer", None))
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
 const JSON_STR: &'static str = r#"{"timestamp":2837513946597,"zone_id":123456,"zone_plan":1,"http":{"protocol":2,"status":200,"host_status":503,"up_status":520,"method":1,"content_type":"text/html","user_agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.146 Safari/537.36","referer":"https://www.cloudflare.com/","request_uri":"/cdn-cgi/trace"},"origin":{"ip":"1.2.3.4","port":8000,"hostname":"www.example.com","protocol":2},"country":238,"cache_status":3,"server_ip":"192.168.1.1","server_name":"metal.cloudflare.com","remote_ip":"10.1.2.3","bytes_dlv":123456,"ray_id":"10c73629cce30078-LAX"}"#;
 
 #[test]
@@ -868,6 +1021,111 @@ fn bench_serializer_my_mem_writer1(b: &mut Bencher) {
     b.iter(|| {
         wr.buf.clear();
 
+        let mut serializer = json::Serializer::new(wr.by_ref());
+        log.serialize(&mut serializer).unwrap();
+        let _json = serializer.into_inner();
+    });
+}
+
+#[test]
+fn test_serializer_my_buf_writer0() {
+    let log = Log::new();
+
+    let mut buf = [0; 1024];
+
+    let len = {
+        let mut wr = MyBufWriter0::new(&mut buf);
+        {
+            let mut serializer = json::Serializer::new(wr.by_ref());
+            log.serialize(&mut serializer).unwrap();
+            let _json = serializer.into_inner();
+        }
+        wr.buf.len()
+    };
+
+    assert_eq!(&buf.as_slice()[..buf.len() - len], JSON_STR.as_bytes());
+}
+
+#[bench]
+fn bench_serializer_my_buf_writer0(b: &mut Bencher) {
+    let log = Log::new();
+    let json = json::to_vec(&log);
+    b.bytes = json.len() as u64;
+
+    let mut buf = [0; 1024];
+
+    b.iter(|| {
+        let mut wr = MyBufWriter1::new(&mut buf);
+        let mut serializer = json::Serializer::new(wr.by_ref());
+        log.serialize(&mut serializer).unwrap();
+        let _json = serializer.into_inner();
+    });
+}
+
+#[test]
+fn test_serializer_my_buf_writer1() {
+    let log = Log::new();
+
+    let mut buf = [0; 1024];
+
+    let len = {
+        let mut wr = MyBufWriter1::new(&mut buf);
+        {
+            let mut serializer = json::Serializer::new(wr.by_ref());
+            log.serialize(&mut serializer).unwrap();
+            let _json = serializer.into_inner();
+        }
+        wr.buf.len()
+    };
+
+    assert_eq!(&buf.as_slice()[..buf.len() - len], JSON_STR.as_bytes());
+}
+
+#[bench]
+fn bench_serializer_my_buf_writer1(b: &mut Bencher) {
+    let log = Log::new();
+    let json = json::to_vec(&log);
+    b.bytes = json.len() as u64;
+
+    let mut buf = [0; 1024];
+
+    b.iter(|| {
+        let mut wr = MyBufWriter1::new(&mut buf);
+        let mut serializer = json::Serializer::new(wr.by_ref());
+        log.serialize(&mut serializer).unwrap();
+        let _json = serializer.into_inner();
+    });
+}
+
+#[test]
+fn test_serializer_my_buf_writer2() {
+    let log = Log::new();
+
+    let mut buf = [0; 1024];
+
+    let len = {
+        let mut wr = MyBufWriter2::new(&mut buf);
+        {
+            let mut serializer = json::Serializer::new(wr.by_ref());
+            log.serialize(&mut serializer).unwrap();
+            let _json = serializer.into_inner();
+        }
+        wr.dst.len()
+    };
+
+    assert_eq!(&buf.as_slice()[..buf.len() - len], JSON_STR.as_bytes());
+}
+
+#[bench]
+fn bench_serializer_my_buf_writer2(b: &mut Bencher) {
+    let log = Log::new();
+    let json = json::to_vec(&log);
+    b.bytes = json.len() as u64;
+
+    let mut buf = [0; 1024];
+
+    b.iter(|| {
+        let mut wr = MyBufWriter2::new(&mut buf);
         let mut serializer = json::Serializer::new(wr.by_ref());
         log.serialize(&mut serializer).unwrap();
         let _json = serializer.into_inner();
