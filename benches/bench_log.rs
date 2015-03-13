@@ -645,6 +645,12 @@ impl io::Write for MyMemWriter0 {
     }
 
     #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.buf.push_all(buf);
+        Ok(())
+    }
+
+    #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -687,6 +693,12 @@ impl io::Write for MyMemWriter1 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         push_all_bytes(&mut self.buf, buf);
         Ok(buf.len())
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        push_all_bytes(&mut self.buf, buf);
+        Ok(())
     }
 
     #[inline]
