@@ -685,11 +685,6 @@ fn test_parse_option() {
         x: Option<isize>,
     }
 
-    /*
-    let value: Foo = from_str("{}").unwrap();
-    assert_eq!(value, Foo { x: None });
-    */
-
     test_parse_ok(&[
         ("{\"x\": null}", Foo { x: None }),
         ("{\"x\": 5}", Foo { x: Some(5) }),
@@ -699,7 +694,7 @@ fn test_parse_option() {
 #[test]
 fn test_parse_enum() {
     test_parse_err::<Animal>(&[
-        ("{}", Error::SyntaxError(ErrorCode::EOFWhileParsingString, 1, 3)),
+        ("{}", Error::SyntaxError(ErrorCode::ExpectedSomeValue, 1, 2)),
         ("{\"unknown\":[]}", Error::SyntaxError(ErrorCode::ExpectedSomeValue, 0, 0)),
         ("{\"Dog\":{}}", Error::SyntaxError(ErrorCode::ExpectedSomeValue, 0, 0)),
         ("{\"Frog\":{}}", Error::SyntaxError(ErrorCode::ExpectedSomeValue, 1, 9)),
